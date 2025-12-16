@@ -1,8 +1,4 @@
-# Etioplast-Quantification
-
-## This project focuses on the automated quantification of subcellular structures within etioplasts using deep learning and web technologies.
-
-# Etioplast Analysis & Quantification Tool 🌿🔬
+# Etioplast Analysis & Quantification Tool
 
 A Django-based computer vision application designed for the automated segmentation, quantification, and biological analysis of plant cell ultrastructures (specifically Etioplasts) using **YOLOv8** and **Generative AI**.
 
