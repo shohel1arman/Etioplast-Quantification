@@ -6,8 +6,3 @@ urlpatterns = [
     path('analyze-folder/', analyze_summary_folder, name='analyze-folder'),
     path('analyze-file/', analyze_summary_file, name='analyze-filee'),
 ]
-
-# # if settings.DEBUG:
-# #     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
-
-

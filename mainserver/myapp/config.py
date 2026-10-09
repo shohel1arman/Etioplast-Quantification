@@ -49,7 +49,7 @@ class Config:
     FONT_THICKNESS = 2
 
 
-    IMG_SIZE = 640
+    IMG_SIZE = 1024
 
     # Default scale: pixels per micrometer (px/µm) — you can override per-image
     PX_PER_UM = 0
@@ -65,7 +65,7 @@ CLASS_DEFINITIONS = {
     1: {'name': 'PLB', 'color': (0, 255, 0)},
     2: {'name': 'Prothylakoid', 'color': (0, 0, 255)},
     3: {'name': 'Plastoglobule', 'color': (255, 255, 0)},
-    4: {'name': 'Starch Grain', 'color': (128, 0, 128)},
+    4: {'name': 'Starch Grain', 'color': (255, 0, 255)},
 }
 
 class DetectedObject:
