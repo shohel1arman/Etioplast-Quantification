@@ -1,13 +1,18 @@
+# v1.1.0
 import os
+import logging
 import requests
+from django.conf import settings
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(os.path.join(settings.BASE_DIR, '.env'))
+logger = logging.getLogger(__name__)
 
 # Access the variables
 API_KEY = os.getenv("API_KEY")
 API_URL = os.getenv("API_URL")
 MODEL = os.getenv("LLM_MODEL")
+TIMEOUT_S = float(os.getenv("LLM_TIMEOUT", "60"))
 
 HEADERS = {
     "Authorization": f"Bearer {API_KEY}",
@@ -46,24 +51,32 @@ def generate_prompt(analysis):
 
 
 def get_generative_response(data):
-    #return f"AI is temporary unavailable for token limit. Please check back later."
+    """Optional narrative report. Only the numeric summary is sent - never images.
+    Returns None when no LLM is configured so the quantification still works."""
+    if not (API_KEY and API_URL and MODEL):
+        return None
     prompt = generate_prompt(data)
     payload = {
         "model": MODEL,
         "messages": [
             {
-                "role": "system", 
+                "role": "system",
                 "content": "You are a professional plant biologist writing clean, paragraph-based analytical reports. You never use bullet points."
             },
             {"role": "user", "content": prompt}
         ],
-        "temperature": 0.5 # Lowered slightly for more factual, less hallucinated responses
+        "temperature": 0.5
     }
-
-    response = requests.post(API_URL, headers=HEADERS, json=payload)
-
+    try:
+        response = requests.post(API_URL, headers=HEADERS, json=payload, timeout=TIMEOUT_S)
+    except requests.RequestException as e:
+        logger.warning(f"LLM request failed: {e}")
+        return "AI report is temporarily unavailable. The quantitative results above are unaffected."
     if response.status_code == 200:
-        return response.json()["choices"][0]["message"]["content"]
+        try:
+            return response.json()["choices"][0]["message"]["content"]
+        except (ValueError, KeyError, IndexError, TypeError):
+            logger.warning("LLM response was not in the expected chat-completions format")
     else:
-        #raise Exception(f"LLM API error {response.status_code}: {response.text}")
-        return f"AI report is temporary unavailable for token limitation. Please check back later."
+        logger.warning(f"LLM API error {response.status_code}: {response.text[:300]}")
+    return "AI report is temporarily unavailable. The quantitative results above are unaffected."

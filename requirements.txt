@@ -1,19 +1,17 @@
-tensorflow
-matplotlib
-ipython
+# Backend (Django API + inference). Tested versions (Python 3.13, CPU) in comments.
+torch                  # 2.14.1  - for GPU, install the CUDA build from pytorch.org first
+ultralytics            # 8.4.182
 numpy
-keras
-torch
+opencv-python          # 5.0.0
+scikit-image           # 0.26.0
 pandas
-scikit-learn
-opencv-python
-ultralytics
-scikit-image
-
-django
+django                 # 6.1.2
 djangorestframework
 django-cors-headers
 requests
 pillow
-python-decouple
 python-dotenv
+
+# Notebook / training extras (optional):
+# matplotlib
+# ipython
