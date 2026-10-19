@@ -1,5 +1,8 @@
-# v1.0.1
+# v1.1.0
 import os
+import math
+import zipfile
+import datetime
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.text import get_valid_filename
@@ -8,17 +11,20 @@ import uuid
 from .config import logger, Config
 from .process import Process, is_image_file
 from .generativeai import get_generative_response
+from .detection import ModelNotConfigured, model_info
 
 def _unique_dir(root: str, name: str) -> str:
     safe = get_valid_filename(name)
     base = os.path.join(root, safe)
     d = base
     i = 1
-    while os.path.exists(d):
-        d = f"{base}_{i}"
-        i += 1
-    os.makedirs(d, exist_ok=True)
-    return d
+    while True:
+        try:
+            os.makedirs(d)  # atomic: fails if another request just created it
+            return d
+        except FileExistsError:
+            d = f"{base}_{i}"
+            i += 1
 
 def _as_media_url(path: str) -> str | None:
     try:
@@ -31,15 +37,36 @@ def _as_media_url_abs(request, path: str) -> str | None:
     rel_url = _as_media_url(path)
     return request.build_absolute_uri(rel_url) if rel_url else None
 
+class BadRequest(ValueError):
+    pass
+
+
 def _get_px_per_um(request, fallback=None):
-    """Read px_per_um from POST, else fallback, else Config.PX_PER_UM."""
+    """Read px_per_um from POST, else fallback, else Config.PX_PER_UM. Must be > 0."""
     val = request.POST.get('px_per_um')
-    if val not in (None, ''):
-        try:
-            return float(val)
-        except ValueError:
-            pass
-    return float(fallback if fallback is not None else Config.PX_PER_UM)
+    if val in (None, ''):
+        val = fallback if fallback is not None else Config.PX_PER_UM
+    try:
+        px = float(val)
+    except (TypeError, ValueError):
+        raise BadRequest(f"px_per_um must be a number, got {val!r}")
+    if not math.isfinite(px) or px <= 0:
+        raise BadRequest("px_per_um (pixels per micrometre) is required and must be > 0")
+    return px
+
+
+def _error(detail, status):
+    return JsonResponse({'status': 'error', 'detail': detail}, status=status)
+
+
+def health(request):
+    """GET /api/health/ - confirms the model loads and shows its class mapping."""
+    try:
+        info = model_info()
+        return JsonResponse({'status': 'ok', 'model': info, 'default_px_per_um': Config.PX_PER_UM or None})
+    except ModelNotConfigured as e:
+        return _error(str(e), 503)
+
 
 @csrf_exempt
 def analyze_summary_folder(request):
@@ -91,7 +118,7 @@ def analyze_summary_folder(request):
 
         for orig_name, fobj in images:
             # Save uploaded file to disk
-            safe_name = orig_name.replace('\\', '/').split('/')[-1]
+            safe_name = get_valid_filename(orig_name.replace('\\', '/').split('/')[-1])
             save_path = os.path.join(session_dir, safe_name)
             with open(save_path, 'wb') as out:
                 for chunk in fobj.chunks():
@@ -101,19 +128,14 @@ def analyze_summary_folder(request):
             base_name, _ = os.path.splitext(safe_name)
             per_image_dir = _unique_dir(Config.SAVE_DIR, base_name)
 
-            old_save_dir = Config.SAVE_DIR
-            Config.SAVE_DIR = per_image_dir
-            try:
-                p = Process(px_per_um=px_per_um)
-                report = p.process_image(save_path)
-            finally:
-                Config.SAVE_DIR = old_save_dir
+            p = Process(px_per_um=px_per_um, save_dir=per_image_dir)
+            report = p.process_image(save_path)
 
             if not report:
                 results.append({
                     'file': safe_name,
                     'save_dir_url': _as_media_url_abs(request, per_image_dir),
-                    'error': 'Detection failed or no detections'
+                    'error': p.error or 'Detection failed or no detections'
                 })
                 continue
 
@@ -165,6 +187,10 @@ def analyze_summary_folder(request):
             #'master_zip_included': master_zip['included'] if master_zip else [],
             })
 
+    except BadRequest as e:
+        return _error(str(e), 400)
+    except ModelNotConfigured as e:
+        return _error(str(e), 503)
     except Exception as e:
         logger.exception("Folder processing failed")
         return JsonResponse({'status': 'error', 'detail': str(e)}, status=500)
@@ -282,16 +308,11 @@ def analyze_summary_file(request):
             for chunk in up.chunks():
                 dst.write(chunk)
 
-        old_save_dir = Config.SAVE_DIR
-        Config.SAVE_DIR = per_image_dir
-        try:
-            p = Process(px_per_um=px_per_um)
-            report = p.process_image(upload_path)
-        finally:
-            Config.SAVE_DIR = old_save_dir
+        p = Process(px_per_um=px_per_um, save_dir=per_image_dir)
+        report = p.process_image(upload_path)
 
         if report is None:
-            return JsonResponse({'status': 'error', 'detail': 'Detection failed or no detections'}, status=200)
+            return JsonResponse({'status': 'error', 'detail': p.error or 'Detection failed or no detections'}, status=200)
         
         output_urls = {}
         if 'outputs' in report:
@@ -321,12 +342,13 @@ def analyze_summary_file(request):
         contours_path = report.get('outputs', {}).get('contours', os.path.join(per_image_dir, f"{base_name}_contours_only.png"))
         overlay_path  = report.get('outputs', {}).get('overlay',  os.path.join(per_image_dir, f"{base_name}_overlay.png"))
         csv_path      = os.path.join(per_image_dir, f"{base_name}_measurements.csv")
+        diag_path     = os.path.join(per_image_dir, f"{base_name}_detections_diagnostics.csv")
         masks_dir     = os.path.join(per_image_dir, "masks")
 
         included = []
         with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             # put top-level files at zip root
-            for ap in (blended_path, contours_path, overlay_path, csv_path):
+            for ap in (blended_path, contours_path, overlay_path, csv_path, diag_path):
                 if ap and os.path.isfile(ap):
                     zf.write(ap, os.path.basename(ap))
                     included.append(os.path.basename(ap))
@@ -355,6 +377,10 @@ def analyze_summary_file(request):
             # "master_zip_included": included,
         })
 
+    except BadRequest as e:
+        return _error(str(e), 400)
+    except ModelNotConfigured as e:
+        return _error(str(e), 503)
     except Exception as e:
         logger.exception("Analyze summary failed")
         return JsonResponse({'status': 'error', 'detail': str(e)}, status=500)
@@ -363,10 +389,6 @@ def analyze_summary_file(request):
 
 
 # ...... ZIP -------
-
-import zipfile
-import datetime
-# ... keep your other imports
 
 def _zip_add_file(zf: zipfile.ZipFile, abs_path: str, arcname: str, included: list):
     if abs_path and os.path.isfile(abs_path):
@@ -407,6 +429,8 @@ def _make_master_zip(request, bundle_items: list[dict]) -> dict:
             _zip_add_file(zf, contours, f"{base_name}/{os.path.basename(contours)}", included)
             _zip_add_file(zf, overlay,  f"{base_name}/{os.path.basename(overlay)}", included)   # optional
             _zip_add_file(zf, csv_file, f"{base_name}/{os.path.basename(csv_file)}", included)
+            diag = os.path.join(per_image_dir, f"{base_name}_detections_diagnostics.csv")
+            _zip_add_file(zf, diag, f"{base_name}/{os.path.basename(diag)}", included)
 
     return {
         "master_path": master_path,

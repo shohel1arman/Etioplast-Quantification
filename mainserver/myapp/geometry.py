@@ -1,4 +1,4 @@
-# v1.0.1
+# v1.1.0
 import os
 import csv
 import math
@@ -71,10 +71,11 @@ def is_square_like(contour):
 class MeasurementCalculator:
     """All measurement conversions in one place (px/µm -> µm, µm²)"""
     def __init__(self, px_per_um: float):
-        self.px_per_um = float(px_per_um) if px_per_um else float(Config.PX_PER_UM)
-        if self.px_per_um <= 0:
-            self.px_per_um = float(Config.PX_PER_UM)
-            
+        val = float(px_per_um) if px_per_um else float(Config.PX_PER_UM)
+        if not math.isfinite(val) or val <= 0:
+            raise ValueError("px_per_um (pixels per micrometre) must be a positive number; "
+                             "set it per request or PX_PER_UM in .env")
+        self.px_per_um = val
 
     @property
     def um_per_px(self) -> float:
@@ -100,9 +101,31 @@ def _equivalent_diameter_px(area_px2: float) -> float:
         return 0.0
     return math.sqrt(4.0 * area_px2 / math.pi)
 
-def _skeleton_length_px(mask: np.ndarray) -> int:
+def _skeleton_length_px(mask: np.ndarray) -> float:
+    """Centre-line length in pixels of a thin structure.
+
+    Skeletonises the mask, then sums the distance between 8-connected skeleton
+    neighbours: 1 px for horizontal/vertical steps and sqrt(2) px for diagonal
+    steps. Diagonal links that duplicate an existing orthogonal path (the corner
+    of an L-shaped step) are skipped so corners aren't counted twice.
+    The previous version counted skeleton pixels, which under-estimates diagonal
+    lines by up to ~29%.
+    """
     sk = skeletonize((mask > 0).astype(bool))
-    return int(np.count_nonzero(sk))
+    if not sk.any():
+        return 0.0
+    p = np.pad(sk, 1)
+    c = p[1:-1, 1:-1]
+    right = c & p[1:-1, 2:]
+    down = c & p[2:, 1:-1]
+    n_orth = int(right.sum() + down.sum())
+    # diagonal down-right / down-left, skipped if an orthogonal 2-step path exists
+    dr = c & p[2:, 2:] & ~(p[1:-1, 2:] | p[2:, 1:-1])
+    dl = c & p[2:, :-2] & ~(p[1:-1, :-2] | p[2:, 1:-1])
+    n_diag = int(dr.sum() + dl.sum())
+    length = n_orth + math.sqrt(2.0) * n_diag
+    # a lone skeleton pixel still represents ~1 px of structure
+    return float(max(length, 1.0))
 
 
 def write_measurements_csv(valid_etioplasts, px_per_um: float, save_dir: str, base_name: str):
@@ -124,6 +147,8 @@ def write_measurements_csv(valid_etioplasts, px_per_um: float, save_dir: str, ba
             'Plastoglobule_Diameter_Mean_um': 0.0,
             'Plastoglobule_Diameter_Std_um': 0.0,  # <-- Added STD
             'Starch_Grain_Area_um2': 0.0,
+            'PX_PER_UM': calc.px_per_um,
+            'Containment_Mode': Config.CONTAINMENT_MODE,
         }
         pg_diams_um = []
         starch_area_px2 = 0

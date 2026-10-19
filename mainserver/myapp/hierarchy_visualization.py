@@ -1,13 +1,24 @@
-# v1.0.1
+# v1.1.0
 import os
 import cv2
 import numpy as np
 from .config import Config, CLASS_DEFINITIONS, logger
 from .geometry import mask_from_contour, points_inside_ratio, overlap_ratio, touches_border, is_square_like
 
+def _parent_region(self, parent_obj):
+    """Dilated parent mask used for containment, cached per parent and mode."""
+    mode = Config.CONTAINMENT_MODE
+    cache = getattr(parent_obj, '_region_cache', None)
+    if cache and cache[0] == mode:
+        return cache[1]
+    contour = cv2.convexHull(parent_obj.contour) if mode == 'hull' else parent_obj.contour
+    region = mask_from_contour(self.image_shape, contour, dilate_iters=Config.PARENT_DILATE_ITER)
+    parent_obj._region_cache = (mode, region)
+    return region
+
+
 def strict_contains(self, child_obj, parent_obj):
-    dil = Config.PARENT_DILATE_ITER if child_obj.class_id == 2 else Config.PARENT_DILATE_ITER
-    parent_mask = mask_from_contour(self.image_shape, parent_obj.contour, dilate_iters=dil)
+    parent_mask = _parent_region(self, parent_obj)
 
     ov_min = Config.CLASS_OVERLAP_MIN.get(child_obj.class_id, 0.5)
     pt_min = Config.CLASS_POINTS_INSIDE_MIN.get(child_obj.class_id, 0.5)
@@ -23,6 +34,8 @@ def strict_contains(self, child_obj, parent_obj):
     return True
 
 def build_hierarchy(self):
+    """Apply the parent/child rules. Every object ends with is_valid set and, if
+    rejected, a human-readable reject_reason (used by the diagnostics export)."""
     logger.info("Building hierarchy with STRICT rules (valid-etioplast-only).")
     etioplasts = [o for o in self.detected_objects if o.class_id == 0]
     plbs = [o for o in self.detected_objects if o.class_id == 1]
@@ -30,76 +43,61 @@ def build_hierarchy(self):
 
     if not etioplasts:
         logger.warning("No Etioplasts detected by model!")
+        for obj in self.detected_objects:
+            obj.is_valid = False
+            obj.reject_reason = 'no etioplast detected in image'
+        self.stats['rejected_organelles'] = len(self.detected_objects)
         return
 
     etioplasts.sort(key=lambda x: x.area, reverse=True)
     valid_list = []
     for idx, et in enumerate(etioplasts):
         logger.info(f"Check Etioplast {idx+1}/{len(etioplasts)} (conf: {et.confidence:.2f}, area: {et.area:.0f})")
+        reason = None
         plbs_inside = [p for p in plbs if p.parent is None and strict_contains(self, p, et)]
         if len(plbs_inside) == 0:
-            logger.warning("❌ Rejected: no PLB strictly inside")
-            et.is_valid = False
-            self.stats['rejected_etioplasts'] += 1
-            self.stats['reject_no_plb'] += 1
-            continue
+            reason, key = 'no PLB inside', 'reject_no_plb'
+        elif touches_border(self.image_shape, et.contour):
+            reason, key = 'touches image border (incomplete)', 'reject_incomplete'
+        elif not is_square_like(et.contour):
+            reason, key = 'failed shape check (not square-like)', 'reject_not_square_like'
 
-        if touches_border(self.image_shape, et.contour):
-            logger.warning("❌ Rejected: incomplete (touches image border)")
+        if reason:
+            logger.warning(f"Rejected {et.object_id}: {reason}")
             et.is_valid = False
+            et.reject_reason = reason
             self.stats['rejected_etioplasts'] += 1
-            self.stats['reject_incomplete'] += 1
-            continue
-
-        if not is_square_like(et.contour):
-            logger.warning("❌ Rejected: not square-like")
-            et.is_valid = False
-            self.stats['rejected_etioplasts'] += 1
-            self.stats['reject_not_square_like'] += 1
+            self.stats[key] += 1
             continue
 
         for p in plbs_inside:
             p.parent = et
             et.children.append(p)
-
         et.is_valid = True
         valid_list.append(et)
 
     for et in valid_list:
         for org in others:
-            if org.parent is not None:
-                continue
-            if strict_contains(self, org, et):
+            if org.parent is None and strict_contains(self, org, et):
                 org.parent = et
                 et.children.append(org)
 
     self.valid_etioplasts = valid_list
-    self.stats['valid_etioplasts'] = len(self.valid_etioplasts)
+    self.stats['valid_etioplasts'] = len(valid_list)
 
     valid_children = 0
     rejected_children = 0
     for obj in self.detected_objects:
         if obj.class_id == 0:
             continue
-        keep = False
-        for et in self.valid_etioplasts:
-            if strict_contains(self, obj, et):
-                keep = True
-                if obj.parent is None:
-                    obj.parent = et
-                    et.children.append(obj)
-                break
-        if keep:
+        if obj.parent is not None and obj.parent.is_valid:
             obj.is_valid = True
             valid_children += 1
         else:
             obj.is_valid = False
-            if obj.parent is not None:
-                try:
-                    obj.parent.children.remove(obj)
-                except ValueError:
-                    pass
-                obj.parent = None
+            obj.parent = None
+            obj.reject_reason = ('not inside any valid etioplast' if valid_list
+                                 else 'no valid etioplast in image')
             rejected_children += 1
 
     self.stats['valid_organelles'] = valid_children
@@ -127,7 +125,7 @@ def draw_visualization_improved(self, img):
     return overlay
 
 def save_outputs_mask(self, base_name):
-    masks_dir = os.path.join(Config.SAVE_DIR, 'masks')
+    masks_dir = os.path.join(getattr(self, 'save_dir', Config.SAVE_DIR), 'masks')
     os.makedirs(masks_dir, exist_ok=True)
     logger.info("💾 Saving individual masks...")
 

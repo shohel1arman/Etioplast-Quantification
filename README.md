@@ -162,157 +162,101 @@ This is an **estimate**, not a direct physical 3D diameter. Prothylakoid centerl
 
 ## Installation and configuration
 
-### 1. Clone the repository
+Tested on Python 3.13 (CPU). Run all backend commands from `mainserver/` (the folder with `manage.py`).
 
 ```bash
-git clone <repository-url>
-cd etioplast-analysis
-```
-
-Replace `<repository-url>` with the real Git remote. The local folder name must match your checkout, not necessarily `etioplast-analysis`.
-
-### 2. Create and activate a virtual environment
-
-**Windows PowerShell:**
-
-```powershell
+git clone https://github.com/shohel1arman/Etioplast-Quantification.git
+cd Etioplast-Quantification
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-```
-
-**Windows Command Prompt:**
-
-```bat
-python -m venv .venv
-.venv\Scripts\activate.bat
-```
-
-**Linux / macOS:**
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-```
-
-### 3. Install dependencies
-
-If the repository contains a tested dependency manifest, prefer that:
-
-```bash
-python -m pip install --upgrade pip
+# Windows:  .venv\Scripts\activate        Linux/macOS:  source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-If no `requirements.txt` exists, the following is an **illustrative starting set**, not a verified lockfile for this repository:
+For GPU inference, install a CUDA build of PyTorch first, following the PyTorch site for your OS/CUDA version.
+
+### Model weights (required)
+
+The `.pt` weights are not in Git (see `.gitignore`). Put your trained YOLOv8 **segmentation** model at, for example, `TrainedModelv2/best.pt`, then:
 
 ```bash
-pip install django ultralytics opencv-python-headless numpy scikit-image pandas requests python-dotenv
-```
-
-Install `djangorestframework` **only if the project imports/uses it**. For GPU inference, install an appropriate **PyTorch CUDA build** according to the PyTorch installation instructions for your OS and CUDA runtime; a `pip install` of the general dependencies does not guarantee CUDA support.
-
-### 4. Configure the environment
-
-Create a `.env` file alongside `manage.py`:
-
-```dotenv
-# Django
-DEBUG=True
-SECRET_KEY=replace-with-a-long-random-secret
-ALLOWED_HOSTS=127.0.0.1,localhost
-
-# YOLO model and image calibration
-MODEL_PATH=path/to/weights/best.pt
-PX_PER_UM=344.8
-
-# Optional generative AI integration
-API_KEY=your-provider-api-key
-API_URL=https://your-llm-provider.example/v1/endpoint
-LLM_MODEL=your-model-id
-```
-
-**Important:** A `.env` file does nothing by itself. The Django settings and AI integration code must explicitly load these variables (for example using `python-dotenv` or a similar configuration layer). Confirm that the variable names are the ones expected in the actual repository. Use an **absolute model path** if relative-path resolution is unclear. Do not commit `.env` or private model credentials.
-
-`PX_PER_UM` is only a fallback example. Prefer an image-level calibration extracted from acquisition metadata or verified scale bars.
-
-### 5. Apply migrations
-
-Run from the directory containing `manage.py`:
-
-```bash
+cd mainserver
+cp .env.example .env      # Windows: copy .env.example .env
+# edit .env -> MODEL_PATH=TrainedModelv2/best.pt   (absolute path, or relative to the repo root)
 python manage.py migrate
+python manage.py test myapp          # unit tests, no model needed
 ```
 
-`makemigrations` is needed **only after creating or changing Django models**:
+Class IDs are mapped **by the model's own class names** (`model.names`), not by index, so a 4-class model (no starch) or a different class order works. Recognised names include `Etioplast`, `PLB`, `Prothylakoid`/`Prothylakid`, `Plastoglobule`, `Starch Grain`; any other class is ignored with a log warning.
 
-```bash
-python manage.py makemigrations
-python manage.py migrate
-```
+### Scale (`px_per_um`)
 
-### 6. Verify the setup
-
-```bash
-python manage.py check
-python -c "import torch; print('CUDA available:', torch.cuda.is_available())"
-```
-
-The CUDA check returning `False` is not necessarily a blocker: CPU inference may still work, although more slowly.
+Pixels per micrometre must be supplied per request (or set `PX_PER_UM` in `.env`). There is no default: a missing or non-positive value returns HTTP 400 rather than producing wrong numbers.
 
 ## Running the application
 
-### Start the Django development server
+**Backend** (port 8000):
 
 ```bash
+cd mainserver
 python manage.py runserver
+curl http://127.0.0.1:8000/api/health/     # confirms the model loads and shows the class mapping
 ```
 
-Open **http://127.0.0.1:8000/** in your browser. The available pages depend on the project's `urls.py` and views. Django's built-in server is intended for **development**, not production deployment.
+**Frontend** (port 5173):
 
-### Analyze images
+```bash
+cd Frontend
+npm ci
+npm run dev
+```
 
-The intended workflow is:
+Open http://localhost:5173, upload 1–5 images, enter px/µm, and run detection. If the backend is not on `127.0.0.1:8000`, create `Frontend/.env` with `VITE_API_BASE=http://<host>:8000`.
 
-1. Launch the Django application and open its image-analysis interface, if implemented.
-2. Select an EM image or a batch/folder workflow, according to the available view.
-3. Provide or confirm the applicable **pixels-per-micrometer** calibration.
-4. Run inference with the configured weights and filtering rules.
-5. Inspect the overlay, accepted parent regions, child instances, and extracted measurements.
-6. Export CSV data and review any optional LLM summary.
+**Batch / offline (no web server, any number of images):**
 
-For unattended batch jobs, use the repository's existing management command or processing script **if one is implemented**. This README does not assume a batch command name that has not been supplied.
+```bash
+cd mainserver
+python manage.py analyze_images "../Test Image" --px-per-um 344.8 --out ../results
+# options: --recursive  --conf 0.25 (diagnostic threshold)  --imgsz 640  --limit 20
+```
 
 ## Using the REST API
 
-The project description states that single-image and folder-processing endpoints are part of the application. **The precise paths, HTTP methods, request field names, and response schema were not provided.** Find the actual routes in the root and app-level `urls.py` files and the serializers/views, and replace the placeholders below.
-
-**Illustrative single-image upload (adjust the route and field names):**
+| Method | Route | Form fields | Notes |
+| --- | --- | --- | --- |
+| GET | `/api/health/` | – | Model path, class names and mapping; 503 if the model is not configured |
+| POST | `/api/analyze-file/` | `file`, `px_per_um` | Single image; returns `analysis`, `scale_used`, `output_image_url`, `output_urls`, `explanation`, `master_zip_url` |
+| POST | `/api/analyze-folder/` | `files` (up to 5) or `file`, `px_per_um` | Returns `results[]` (one per image) and `master_zip_url` |
 
 ```bash
-curl -X POST "http://127.0.0.1:8000/<configured-image-endpoint>/" \
-  -F "image=@/path/to/etioplast_image.png" \
-  -F "px_per_um=344.8"
+curl -X POST http://127.0.0.1:8000/api/analyze-file/ \
+  -F "file=@/path/to/image.png" -F "px_per_um=344.8"
 ```
 
-A batch API may accept a list of images, an uploaded archive, or a server-side input directory **depending on the implementation**. Do not expose unrestricted server paths through a public API; restrict input/output locations and validate uploaded files.
+`explanation` is `null` unless `API_KEY`, `API_URL` and `LLM_MODEL` are set (any OpenAI-compatible chat-completions endpoint). Only the numeric summary is sent, never the image.
 
 ## Output files
 
-Depending on the implementation and selected options, the analysis may generate:
+Per image, in its own folder under `mainserver/media/detections/` (or `--out` for batch runs):
 
-- **Annotated image overlays:** accepted etioplast masks/contours and associated organelles with class colors, optional boxes, and instance IDs.
-- **Binary masks:** per-class or per-instance masks for inspection and reproducibility.
-- **CSV measurements:** one row per accepted etioplast, including an image identifier and etioplast instance ID.
-- **Optional text/JSON summaries:** quantitative results and LLM-generated interpretation.
+| File | Content |
+| --- | --- |
+| `<name>_model_first_detection.png` | Blended overlay of accepted structures |
+| `<name>_overlay.png`, `<name>_contours_only.png` | Filled overlay / outlines only |
+| `<name>_measurements.csv` | One row per accepted etioplast (areas µm², counts, prothylakoid length µm, plastoglobule diameter mean/SD µm, `PX_PER_UM`) |
+| `<name>_detections_diagnostics.csv` | **Every raw detection**: class, confidence, area, bbox, kept/rejected, parent, rejection reason |
+| `masks/` | Binary mask per accepted object and a combined mask |
 
-A recommended CSV schema is:
+Batch runs also write `all_measurements.csv`, `all_detections_diagnostics.csv` and `run_summary.csv` (raw vs accepted counts per image).
 
-```csv
-Image_Name,Etioplast_ID,Etioplast_Area_um2,PLB_Area_um2,Prothylakoid_Number,Total_Prothylakoid_Length_um,Plastoglobule_Number,Mean_Plastoglobule_Diameter_um,Starch_Grain_Area_um2,PX_PER_UM
-image_001.png,1,,,,,,,,344.8
-```
+Use the diagnostics file to separate the two failure modes in the "Known challenges" section: a structure that **never appears** there was missed by the model; one listed as `rejected` was removed by a hierarchy rule.
 
-The blank numeric cells above are **placeholders, not measurements**. Record missing measurements as missing values rather than assuming zero; `0` should indicate a validly observed count/quantity of zero. The actual export schema may differ.
+### Measurement definitions (v1.1)
+
+- Areas: pixel count of the filled main contour of each instance ÷ `px_per_um²`. Only the largest connected component of a predicted mask is used, so what is measured matches what is drawn.
+- Prothylakoid length: skeleton centre-line, summing 1 px per orthogonal step and √2 px per diagonal step. (v1.0 counted skeleton pixels, which under-estimates diagonal segments by up to ~29%; lengths from v1.0 and v1.1 are not directly comparable.)
+- Plastoglobule diameter: equivalent-circle diameter `2·sqrt(A/π)`, a 2D estimate.
+- Containment (`CONTAINMENT_MODE` in `.env`): `mask` (default) tests each organelle against the dilated etioplast mask; `hull` uses the mask's convex hull instead. Use `hull` if the diagnostics show edge organelles (often plastoglobules) rejected because the model cut a notch out of the envelope. It can also admit organelles in genuine concavities, so check the overlays. The mode used is written to every measurements CSV.
 
 ## Dataset and further training
 

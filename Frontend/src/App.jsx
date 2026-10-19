@@ -10,11 +10,14 @@ import QuantificationPanel from "./components/QuantificationPanel";
 import ResultsDisplay from "./components/ResultsDisplay";
 import UploadSection from "./components/UploadSection";
 
+// Backend address. Override with VITE_API_BASE in Frontend/.env (e.g. http://178.16.139.239:8000)
+const API_BASE = (import.meta.env.VITE_API_BASE || "http://127.0.0.1:8000").replace(/\/$/, "");
+
 function App() {
   const [selectedFile, setSelectedFile] = useState(null);
   const [selectedFiles, setSelectedFiles] = useState([]);
   const [result, setResult] = useState({});
-  const [loading, setLoading] = useState(false);
+  const [, setLoading] = useState(false);
 
   // Shared index for slideshow + metrics + CSV + AI
   const [activeIndex, setActiveIndex] = useState(0);
@@ -43,8 +46,8 @@ function App() {
 
     const isFolder = files.length > 1;
     const url = isFolder
-      ? "http://127.0.0.1:8000/api/analyze-folder/"
-      : "http://127.0.0.1:8000/api/analyze-file/";
+      ? `${API_BASE}/api/analyze-folder/`
+      : `${API_BASE}/api/analyze-file/`;
 
     const formData = new FormData();
     if (isFolder) {
@@ -83,7 +86,9 @@ function App() {
             let data = {};
             try {
               data = JSON.parse(xhr.responseText || "{}");
-            } catch (_) {}
+            } catch {
+              // non-JSON response: keep empty result
+            }
 
             setResult(data);
             setActiveIndex(0);
@@ -112,7 +117,14 @@ function App() {
             }, 700);
           } else {
             console.error("Detection failed:", xhr.status, xhr.responseText);
-            alert("Detection failed. See console for details.");
+            let detail = "";
+            try {
+              detail = JSON.parse(xhr.responseText || "{}").detail || "";
+            } catch {
+              // non-JSON error body (e.g. Django debug page)
+            }
+            if (xhr.status === 0) detail = `Cannot reach the server at ${API_BASE}. Is Django running?`;
+            alert(`Detection failed${detail ? ": " + detail : ". See console for details."}`);
             setShowHUD(false);
             setPhase("idle");
             setUploadPct(0);
