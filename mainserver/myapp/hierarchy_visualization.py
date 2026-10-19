@@ -5,9 +5,20 @@ import numpy as np
 from .config import Config, CLASS_DEFINITIONS, logger
 from .geometry import mask_from_contour, points_inside_ratio, overlap_ratio, touches_border, is_square_like
 
+def _parent_region(self, parent_obj):
+    """Dilated parent mask used for containment, cached per parent and mode."""
+    mode = Config.CONTAINMENT_MODE
+    cache = getattr(parent_obj, '_region_cache', None)
+    if cache and cache[0] == mode:
+        return cache[1]
+    contour = cv2.convexHull(parent_obj.contour) if mode == 'hull' else parent_obj.contour
+    region = mask_from_contour(self.image_shape, contour, dilate_iters=Config.PARENT_DILATE_ITER)
+    parent_obj._region_cache = (mode, region)
+    return region
+
+
 def strict_contains(self, child_obj, parent_obj):
-    dil = Config.PARENT_DILATE_ITER if child_obj.class_id == 2 else Config.PARENT_DILATE_ITER
-    parent_mask = mask_from_contour(self.image_shape, parent_obj.contour, dilate_iters=dil)
+    parent_mask = _parent_region(self, parent_obj)
 
     ov_min = Config.CLASS_OVERLAP_MIN.get(child_obj.class_id, 0.5)
     pt_min = Config.CLASS_POINTS_INSIDE_MIN.get(child_obj.class_id, 0.5)

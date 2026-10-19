@@ -40,6 +40,12 @@ class Config:
     # Containment helpers
     PARENT_DILATE_ITER = 2         # grow parent a bit so children on the edge fall inside
     PARENT_KERNEL = 3
+    # Which parent region children are tested against:
+    #   'mask' - the predicted etioplast mask (default, original behaviour)
+    #   'hull' - its convex hull, so organelles sitting in a notch the model cut
+    #            out of the envelope (often edge plastoglobules) still count.
+    # Changing this changes counts; record the setting with your results.
+    CONTAINMENT_MODE = os.getenv('CONTAINMENT_MODE', 'mask').strip().lower()
 
     # Overlap / inside-point minima (lenient)
     # key: class_id => min overlap fraction
@@ -81,6 +87,10 @@ class Config:
 
 
 os.makedirs(Config.SAVE_DIR, exist_ok=True)
+if Config.CONTAINMENT_MODE not in ('mask', 'hull'):
+    logging.getLogger(__name__).warning(
+        f"Unknown CONTAINMENT_MODE '{Config.CONTAINMENT_MODE}', using 'mask'")
+    Config.CONTAINMENT_MODE = 'mask'
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)

@@ -148,6 +148,7 @@ def write_measurements_csv(valid_etioplasts, px_per_um: float, save_dir: str, ba
             'Plastoglobule_Diameter_Std_um': 0.0,  # <-- Added STD
             'Starch_Grain_Area_um2': 0.0,
             'PX_PER_UM': calc.px_per_um,
+            'Containment_Mode': Config.CONTAINMENT_MODE,
         }
         pg_diams_um = []
         starch_area_px2 = 0

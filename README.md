@@ -256,6 +256,7 @@ Use the diagnostics file to separate the two failure modes in the "Known challen
 - Areas: pixel count of the filled main contour of each instance ÷ `px_per_um²`. Only the largest connected component of a predicted mask is used, so what is measured matches what is drawn.
 - Prothylakoid length: skeleton centre-line, summing 1 px per orthogonal step and √2 px per diagonal step. (v1.0 counted skeleton pixels, which under-estimates diagonal segments by up to ~29%; lengths from v1.0 and v1.1 are not directly comparable.)
 - Plastoglobule diameter: equivalent-circle diameter `2·sqrt(A/π)`, a 2D estimate.
+- Containment (`CONTAINMENT_MODE` in `.env`): `mask` (default) tests each organelle against the dilated etioplast mask; `hull` uses the mask's convex hull instead. Use `hull` if the diagnostics show edge organelles (often plastoglobules) rejected because the model cut a notch out of the envelope. It can also admit organelles in genuine concavities, so check the overlays. The mode used is written to every measurements CSV.
 
 ## Dataset and further training
 

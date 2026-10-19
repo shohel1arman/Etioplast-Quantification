@@ -17,7 +17,7 @@ function App() {
   const [selectedFile, setSelectedFile] = useState(null);
   const [selectedFiles, setSelectedFiles] = useState([]);
   const [result, setResult] = useState({});
-  const [loading, setLoading] = useState(false);
+  const [, setLoading] = useState(false);
 
   // Shared index for slideshow + metrics + CSV + AI
   const [activeIndex, setActiveIndex] = useState(0);

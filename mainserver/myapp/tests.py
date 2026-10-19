@@ -148,3 +148,29 @@ class ApiValidationTests(SimpleTestCase):
 
     def test_get_not_allowed(self):
         self.assertEqual(Client().get('/api/analyze-file/').status_code, 405)
+
+
+class ContainmentModeTests(SimpleTestCase):
+    """Plastoglobule sitting in a notch the model cut out of the etioplast mask."""
+
+    def run_mode(self, mode):
+        def notched(m):
+            cv2.ellipse(m, (500, 500), (250, 200), 0, 0, 360, 255, -1)
+            cv2.circle(m, (745, 500), 30, 0, -1)  # notch on the right edge
+        et = make_obj(0, notched, 1)
+        plb = make_obj(1, ellipse(480, 500, 70, 50), 2)
+        pg = make_obj(3, circle(738, 500, 14), 3)  # inside the notch
+        old = Config.CONTAINMENT_MODE
+        Config.CONTAINMENT_MODE = mode
+        try:
+            p = FakeProc([et, plb, pg])
+            build_hierarchy(p)
+        finally:
+            Config.CONTAINMENT_MODE = old
+        return pg
+
+    def test_mask_mode_rejects_notch_child(self):
+        self.assertFalse(self.run_mode('mask').is_valid)
+
+    def test_hull_mode_accepts_notch_child(self):
+        self.assertTrue(self.run_mode('hull').is_valid)
